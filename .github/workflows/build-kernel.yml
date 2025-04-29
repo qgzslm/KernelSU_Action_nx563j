@@ -5,15 +5,14 @@ on:
 jobs:
   build:
     name: Build Kernel by ${{ github.actor }}
-    runs-on: ubuntu-22.04  # 升级至LTS支持周期内的版本
+    runs-on: ubuntu-22.04
     env:
-      PYTHON_VERSION: 2.7.18
+      PYTHON_VERSION: 2.7
     steps:
     - uses: actions/checkout@v4
 
     - name: Setup Configuration
       run: |
-        # 优化环境变量提取方式
         while IFS= read -r line; do
           if [[ $line == KERNEL_* || $line == USE_* || $line == *_IMAGE* ]]; then
             key="${line%%=*}"
@@ -24,19 +23,20 @@ jobs:
 
     - name: Setup build environment
       run: |
-        # 添加多架构支持
+        # 修复Python依赖安装
         sudo dpkg --add-architecture i386
-        
-        # 安装Python 2.7（通过deadsnakes PPA）
-        sudo apt-get update
+        sudo apt-get update -y
         sudo apt-get install -y software-properties-common
+        # 使用正确的PPA地址
         sudo add-apt-repository -y ppa:deadsnakes/ppa
+        sudo apt-get update -y
+        # 修正包名格式
         sudo apt-get install -y \
-          python$PYTHON_VERSION \
-          python$PYTHON_VERSION-dev \
-          python-is-python3  # 保持python3为默认
-        
-        # 安装构建依赖
+          python${PYTHON_VERSION} \
+          python${PYTHON_VERSION}-dev \
+          python-is-python3
+
+        # 安装构建依赖（保持原样）
         sudo apt-get install -y \
           git ccache automake flex lzop bison gperf build-essential \
           zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev \
@@ -44,19 +44,18 @@ jobs:
           maven libssl-dev lib32ncurses5-dev libx11-dev lib32z-dev \
           libgl1-mesa-dev xsltproc unzip device-tree-compiler \
           crossbuild-essential-arm64 crossbuild-essential-armhf
-        
-        # 创建Python2符号链接
-        sudo ln -sf /usr/bin/python$PYTHON_VERSION /usr/local/bin/python2
+
+        # 确保符号链接
+        sudo ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python2
         python2 --version
 
-        # 初始化工作目录
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
+    # 其余步骤保持不变...
     - name: Download toolchains
       timeout-minutes: 15
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        # 使用镜像加速下载
         wget https://mirror.codebucket.de/android/prebuilts/clang/host/linux-x86/clang-${{ env.CLANG_VERSION }}.tar.gz \
           -O clang.tar.gz
         mkdir clang-aosp && tar -xzf clang.tar.gz -C clang-aosp --strip-components 1
@@ -78,12 +77,10 @@ jobs:
         git clone --depth=1 --branch=${{ env.KERNEL_SOURCE_BRANCH }} \
           ${{ env.KERNEL_SOURCE }} android-kernel
         
-        # 应用KernelSU补丁
         if [ "${{ env.USE_KERNELSU }}" = "true" ]; then
           curl -sSL "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s -- android-kernel
         fi
         
-        # 编译配置
         export PATH="$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin:$PATH"
         make -j$(nproc) -C android-kernel O=out \
           ARCH=${{ env.TARGET_ARCH }} \
@@ -94,7 +91,6 @@ jobs:
           ${{ env.BUILD_EXTRA_COMMAND }} \
           ${{ env.KERNEL_DEFCONFIG }}
 
-        # 执行编译
         make -j$(nproc) -C android-kernel O=out \
           ARCH=${{ env.TARGET_ARCH }} \
           CC=clang \

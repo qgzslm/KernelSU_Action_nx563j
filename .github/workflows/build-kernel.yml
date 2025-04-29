@@ -15,7 +15,7 @@ jobs:
     - name: Setup Configuration
       run: |
         while IFS= read -r line; do
-          if [[ $line == KERNEL_* || $line == USE_* || $line == *_IMAGE* ]]; then
+          if [[ $line == KERNEL_* || $line == USE_* ]]; then
             key="${line%%=*}"
             value="${line#*=}"
             echo "$key=$value" >> $GITHUB_ENV
@@ -24,58 +24,40 @@ jobs:
 
     - name: Setup build environment
       run: |
-        # █████ 关键修复：彻底重建APT源配置 █████
-        sudo rm -rf /etc/apt/sources.list.d/*
-        sudo tee /etc/apt/sources.list << EOL
-        deb https://mirrors.nju.edu.cn/ubuntu/ jammy main restricted universe multiverse
-        deb https://mirrors.nju.edu.cn/ubuntu/ jammy-updates main restricted universe multiverse
-        deb https://mirrors.nju.edu.cn/ubuntu/ jammy-backports main restricted universe multiverse
-        deb https://mirrors.nju.edu.cn/ubuntu/ jammy-security main restricted universe multiverse
-        EOL
-
-        # █████ 修复架构名称拼写错误 █████
+        # 强制更换APT源为国内镜像
+        sudo sed -i 's#http://.*ubuntu.com#https://mirrors.ustc.edu.cn#g' /etc/apt/sources.list
+        sudo sed -i 's#http://security.ubuntu.com#https://mirrors.ustc.edu.cn#g' /etc/apt/sources.list
+        
+        # 修复架构支持
         sudo dpkg --add-architecture arm64
         sudo dpkg --add-architecture armhf
         sudo apt-get update -y
         sudo apt --fix-broken install -y
 
-        # 安装Python环境
-        sudo apt-get install -y software-properties-common
-        sudo add-apt-repository -y ppa:deadsnakes/ppa
-        sudo apt-get update
+        # 安装基础依赖
         sudo apt-get install -y \
+          software-properties-common \
           python${PYTHON_VERSION} \
           python${PYTHON_VERSION}-dev \
-          python-is-python3
-
-        # █████ 修复图片中的依赖缺失问题 █████
-        sudo apt-get install -y \
           crossbuild-essential-arm64 \
-          crossbuild-essential-armhf \
-          libssl-dev:arm64 \
-          libssl-dev:armhf \
-          libc6-dev-arm64-cross \
-          libc6-dev-armhf-cross \
-          binutils-aarch64-linux-gnu \
-          binutils-arm-linux-gnueabihf \
-          git ccache automake flex bison
+          crossbuild-essential-armhf
 
-        # 创建必要目录
-        sudo ln -sf /usr/bin/python2.7 /usr/local/bin/python2
-        mkdir -p $GITHUB_WORKSPACE/kernel_workspace
+        # 安装构建工具链
+        sudo apt-get install -y \
+          git ccache automake flex bison lzop \
+          gcc-multilib g++-multilib zlib1g-dev \
+          libssl-dev:arm64 libssl-dev:armhf
 
     - name: Download toolchains
       timeout-minutes: 5
       run: |
+        mkdir -p $GITHUB_WORKSPACE/kernel_workspace
         cd $GITHUB_WORKSPACE/kernel_workspace
-        # █████ 改用清华大学镜像加速 █████
+        
+        # 使用清华镜像加速下载
         wget https://mirrors.tuna.tsinghua.edu.cn/android/prebuilts/clang/host/linux-x86/clang-${{ env.CLANG_VERSION }}.tar.gz \
           -O clang.tar.gz
         mkdir clang-aosp && tar -xzf clang.tar.gz -C clang-aosp --strip-components 1
-        
-        wget https://mirrors.tuna.tsinghua.edu.cn/android/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/android-12.1.0_r27.tar.gz \
-          -O gcc-aosp.tar.gz
-        mkdir gcc-aosp && tar -xzf gcc-aosp.tar.gz -C gcc-aosp --strip-components 1
 
     - name: Build Kernel
       env:
@@ -85,29 +67,27 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone --depth=1 --branch=${{ env.KERNEL_SOURCE_BRANCH }} ${{ env.KERNEL_SOURCE }} android-kernel
         
+        # 应用KernelSU补丁
         if [ "${{ env.USE_KERNELSU }}" = "true" ]; then
           curl -sSL "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s -- android-kernel
         fi
         
+        # 配置编译环境
         export PATH="$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin:$PATH"
-        # █████ 修复armh64等架构错误 █████
+        
         make -j$(nproc) -C android-kernel O=out \
           ARCH=arm64 \
           CC=clang \
           CROSS_COMPILE=aarch64-linux-android- \
-          CLANG_TRIPLE=aarch64-linux-gnu- \
-          ${{ env.BUILD_EXTRA_COMMAND }} \
           ${{ env.KERNEL_DEFCONFIG }}
 
         make -j$(nproc) -C android-kernel O=out \
           ARCH=arm64 \
           CC=clang \
-          CROSS_COMPILE=aarch64-linux-android- \
-          CLANG_TRIPLE=aarch64-linux-gnu- \
-          ${{ env.BUILD_EXTRA_COMMAND }}
+          CROSS_COMPILE=aarch64-linux-android-
 
-    - name: Package artifacts
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: kernel-${{ env.DEVICE }}-${{ github.run_id }}
-        path: $GITHUB_WORKSPACE/kernel_workspace/android-kernel/out/arch/arm64/boot/*
+        name: kernel-${{ env.DEVICE }}
+        path: $GITHUB_WORKSPACE/kernel_workspace/android-kernel/out/arch/arm64/boot/

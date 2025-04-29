@@ -24,71 +24,54 @@ jobs:
 
     - name: Setup build environment
       run: |
-        # 修复APT源路径拼写错误
-        sudo sed -i 's#http://mirrors.ustc.edu.cn/ubunt#http://mirrors.ustc.edu.cn/ubuntu#g' /etc/apt/sources.list
-        sudo sed -i 's#/ubunt/#/ubuntu/#g' /etc/apt/sources.list
-        
-        # 添加标准架构支持
+        # 修复APT源路径错误
+        sudo rm -rf /etc/apt/sources.list.d/*  # 清除错误配置
+        sudo tee /etc/apt/sources.list << EOL
+        deb https://mirrors.ustc.edu.cn/ubuntu/ jammy main restricted universe multiverse
+        deb https://mirrors.ustc.edu.cn/ubuntu/ jammy-updates main restricted universe multiverse
+        deb https://mirrors.ustc.edu.cn/ubuntu/ jammy-backports main restricted universe multiverse
+        deb https://mirrors.ustc.edu.cn/ubuntu/ jammy-security main restricted universe multiverse
+        EOL
+
+        # 修复多架构支持
         sudo dpkg --add-architecture arm64
         sudo dpkg --add-architecture armhf
         sudo apt-get update -y
-        
-        # 修复损坏的依赖链
-        sudo apt-get -f install -y
-        sudo apt --fix-broken install -y
+        sudo apt-get -f install -y  # 修复损坏依赖
 
-        # 安装基础工具
-        sudo apt-get install -y \
-          software-properties-common \
-          apt-transport-https \
-          ca-certificates
-
-        # 添加Python PPA源
+        # 安装Python 2.7
         sudo add-apt-repository -y ppa:deadsnakes/ppa
-        sudo apt-get update -y
-        
-        # 安装指定Python版本
+        sudo apt-get update
         sudo apt-get install -y \
           python${PYTHON_VERSION} \
           python${PYTHON_VERSION}-dev \
           python-is-python3
 
-        # 安装多架构编译依赖
+        # 安装核心构建依赖
         sudo apt-get install -y \
           crossbuild-essential-arm64 \
           crossbuild-essential-armhf \
           libssl-dev:arm64 \
           libssl-dev:armhf \
-          libc6-dev-arm64-cross \
-          libc6-dev-armhf-cross \
           binutils-aarch64-linux-gnu \
-          binutils-arm-linux-gnueabihf
+          binutils-arm-linux-gnueabihf \
+          git ccache automake flex bison lzop \
+          gcc-multilib g++-multilib zlib1g-dev
 
-        # 安装核心构建工具
-        sudo apt-get install -y \
-          git ccache automake flex bison \
-          lzop liblz4-tool zlib1g-dev \
-          gcc-multilib g++-multilib \
-          libxml2-utils xsltproc unzip \
-          device-tree-compiler make
-
-        # 创建Python符号链接
+        # 修复符号链接
         sudo ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python2
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
     - name: Download toolchains
-      timeout-minutes: 10
+      timeout-minutes: 5
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        # 使用清华镜像加速下载
-        wget https://mirrors.tuna.tsinghua.edu.cn/android/prebuilts/clang/host/linux-x86/clang-${{ env.CLANG_VERSION }}.tar.gz -O clang.tar.gz
-        mkdir clang-aosp && tar -xzf clang.tar.gz -C clang-aosp --strip-components 1
+        # 使用国内镜像加速
+        wget https://mirror.nju.edu.cn/android/prebuilts/clang/host/linux-x86/clang-${{ env.CLANG_VERSION }}.tar.gz -O clang.tar.gz
+        tar -xzf clang.tar.gz -C clang-aosp --strip-components 1
         
-        wget https://mirrors.tuna.tsinghua.edu.cn/android/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/android-12.1.0_r27.tar.gz -O gcc-aosp.tar.gz
-        mkdir gcc-aosp && tar -xzf gcc-aosp.tar.gz -C gcc-aosp --strip-components 1
-        
-        wget https://mirrors.tuna.tsinghua.edu.cn/android/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/android-12.1.0_r27.tar.gz -O gcc32-aosp.tar.gz
-        mkdir gcc32-aosp && tar -xzf gcc32-aosp.tar.gz -C gcc32-aosp --strip-components 1
+        wget https://mirror.nju.edu.cn/android/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/android-12.1.0_r27.tar.gz -O gcc-aosp.tar.gz
+        tar -xzf gcc-aosp.tar.gz -C gcc-aosp --strip-components 1
 
     - name: Build Kernel
       env:
@@ -98,34 +81,28 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone --depth=1 --branch=${{ env.KERNEL_SOURCE_BRANCH }} ${{ env.KERNEL_SOURCE }} android-kernel
         
-        if [ "${{ env.USE_KERNELSU }}" = "true" ]; then
-          curl -sSL "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s -- android-kernel
-        fi
+        # 应用KernelSU补丁
+        [ "${{ env.USE_KERNELSU }}" = "true" ] && curl -sSL "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s -- android-kernel
         
-        export PATH="$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin:$PATH"
-        
-        # 配置阶段
+        # 两阶段编译
         make -j$(nproc) -C android-kernel O=out \
           ARCH=${{ env.TARGET_ARCH }} \
-          CC="clang" \
-          CLANG_TRIPLE="aarch64-linux-gnu-" \
-          CROSS_COMPILE="aarch64-linux-android-" \
-          CROSS_COMPILE_ARM32="arm-linux-androideabi-" \
+          CC=clang \
+          CROSS_COMPILE=aarch64-linux-android- \
+          CLANG_TRIPLE=aarch64-linux-gnu- \
           ${{ env.BUILD_EXTRA_COMMAND }} \
           ${{ env.KERNEL_DEFCONFIG }}
 
-        # 编译阶段
         make -j$(nproc) -C android-kernel O=out \
           ARCH=${{ env.TARGET_ARCH }} \
-          CC="clang" \
-          CLANG_TRIPLE="aarch64-linux-gnu-" \
-          CROSS_COMPILE="aarch64-linux-android-" \
-          CROSS_COMPILE_ARM32="arm-linux-androideabi-" \
+          CC=clang \
+          CROSS_COMPILE=aarch64-linux-android- \
+          CLANG_TRIPLE=aarch64-linux-gnu- \
           ${{ env.BUILD_EXTRA_COMMAND }}
 
     - name: Package artifacts
-      if: ${{ always() }}
       uses: actions/upload-artifact@v4
+      if: ${{ always() }}
       with:
         name: kernel-${{ env.DEVICE }}-${{ github.run_id }}
         path: $GITHUB_WORKSPACE/kernel_workspace/android-kernel/out/arch/${{ env.TARGET_ARCH }}/boot/*

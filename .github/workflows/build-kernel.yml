@@ -8,31 +8,39 @@ jobs:
     runs-on: ubuntu-20.04
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Setup Configuration
       run: |
-        echo "KERNEL_SOURCE=$(cat config.env | grep "KERNEL_SOURCE" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
-        echo "KERNEL_SOURCE_BRANCH=$(cat config.env | grep "KERNEL_SOURCE_BRANCH" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
-        echo "KERNEL_DEFCONFIG=$(cat config.env | grep "KERNEL_DEFCONFIG" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
-        echo "TARGET_ARCH=$(cat config.env | grep "TARGET_ARCH" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
-        echo "KERNEL_FILE=$(cat config.env | grep "KERNEL_FILE" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
-        echo "CLANG_VERSION=$(cat config.env | grep "CLANG_VERSION" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
-        echo "BUILD_EXTRA_COMMAND=$(cat config.env | grep "EXTRA_BUILD_COMMAND" | head -n 1 | cut -d ":" -f 2)" >> $GITHUB_ENV
-        echo "USE_KERNELSU=$(cat config.env | grep "USE_KERNELSU" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
-        echo "MAKE_BOOT_IMAGE=$(cat config.env | grep "MAKE_BOOT_IMAGE" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
-        echo "BOOT_SIGNATURE=$(cat config.env | grep "MAKE_BOOT_IMAGE" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
-        echo "SOURCE_BOOT_IMAGE=$(cat config.env | grep "SOURCE_BOOT_IMAGE" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
+        # 优化环境变量提取逻辑
+        echo "KERNEL_SOURCE=$(grep 'KERNEL_SOURCE=' config.env | cut -d'=' -f2)" >> $GITHUB_ENV
+        echo "KERNEL_SOURCE_BRANCH=$(grep 'KERNEL_SOURCE_BRANCH=' config.env | cut -d'=' -f2)" >> $GITHUB_ENV
+        echo "KERNEL_DEFCONFIG=$(grep 'KERNEL_DEFCONFIG=' config.env | cut -d'=' -f2)" >> $GITHUB_ENV
+        echo "TARGET_ARCH=$(grep 'TARGET_ARCH=' config.env | cut -d'=' -f2)" >> $GITHUB_ENV
+        echo "KERNEL_FILE=$(grep 'KERNEL_FILE=' config.env | cut -d'=' -f2)" >> $GITHUB_ENV
+        echo "CLANG_VERSION=$(grep 'CLANG_VERSION=' config.env | cut -d'=' -f2)" >> $GITHUB_ENV
+        echo "BUILD_EXTRA_COMMAND=$(grep 'EXTRA_BUILD_COMMAND:' config.env | cut -d':' -f2)" >> $GITHUB_ENV
+        echo "USE_KERNELSU=$(grep 'USE_KERNELSU=' config.env | cut -d'=' -f2)" >> $GITHUB_ENV
+        echo "MAKE_BOOT_IMAGE=$(grep 'MAKE_BOOT_IMAGE=' config.env | cut -d'=' -f2)" >> $GITHUB_ENV
+        echo "BOOT_SIGNATURE=$(grep 'BOOT_SIGNATURE=' config.env | cut -d'=' -f2)" >> $GITHUB_ENV
+        echo "SOURCE_BOOT_IMAGE=$(grep 'SOURCE_BOOT_IMAGE=' config.env | cut -d'=' -f2)" >> $GITHUB_ENV
 
     - name: Setup build kernel environment
       run: |
-        echo "BUILD_TIME=$(TZ=Asia/Shanghai date "+%Y%m%d%H%M")" >> $GITHUB_ENV
+        echo "BUILD_TIME=$(TZ=Asia/Shanghai date '+%Y%m%d%H%M')" >> $GITHUB_ENV
         echo "DEVICE=$(echo ${{ env.KERNEL_DEFCONFIG }} | sed 's!vendor/!!;s/_defconfig//;s/_user//;s/-perf//')" >> $GITHUB_ENV
+        
+        # 更新APT源并安装必要依赖
         sudo apt-get update
-        sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev \
-          g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush \
-          schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils \
-          minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev libx11-dev \
-          lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3 default-jdk
+        sudo apt-get install -y --no-install-recommends \
+          git ccache automake flex lzop bison gperf build-essential zip curl \
+          zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libghc-bzlib-dev \
+          squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng \
+          maven libssl-dev pwgen libswitch-perl policycoreutils minicom \
+          libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 \
+          lib32ncurses5-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip \
+          device-tree-compiler python3 default-jdk
+
+        # 安装Python 2.7（兼容性处理）
         wget https://www.python.org/ftp/python/2.7.18/Python-2.7.18.tgz
         tar xzf Python-2.7.18.tgz
         cd Python-2.7.18
@@ -40,19 +48,19 @@ jobs:
         sudo make altinstall
         sudo ln -sfn '/usr/local/bin/python2.7' '/usr/bin/python2'
         cd $GITHUB_WORKSPACE
+
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
     - name: Download Clang-aosp Gcc-aosp Gcc32-aosp
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        mkdir clang-aosp
-        wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-build-2023/clang-${{ env.CLANG_VERSION }}.tar.gz
+        mkdir clang-aosp && wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-build-2023/clang-${{ env.CLANG_VERSION }}.tar.gz
         tar -C clang-aosp/ -zxvf clang-${{ env.CLANG_VERSION }}.tar.gz
-        mkdir gcc-aosp
-        wget https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz -O gcc-aosp.tar.gz
+        
+        mkdir gcc-aosp && wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz -O gcc-aosp.tar.gz
         tar -C gcc-aosp/ -zxvf gcc-aosp.tar.gz
-        mkdir gcc32-aosp
-        wget https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz -O gcc32-aosp.tar.gz
+        
+        mkdir gcc32-aosp && wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz -O gcc32-aosp.tar.gz
         tar -C gcc32-aosp/ -zxvf gcc32-aosp.tar.gz
 
     - name: Download mkbootimg tools

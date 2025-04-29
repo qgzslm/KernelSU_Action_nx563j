@@ -24,46 +24,55 @@ jobs:
 
     - name: Setup build environment
       run: |
-        # 修复APT源配置
-        sudo sed -i 's/azure.archive.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list
-        sudo sed -i 's/security.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list
+        # 修复APT源路径拼写错误
+        sudo sed -i 's#http://mirrors.ustc.edu.cn/ubunt#http://mirrors.ustc.edu.cn/ubuntu#g' /etc/apt/sources.list
+        sudo sed -i 's#/ubunt/#/ubuntu/#g' /etc/apt/sources.list
         
-        # 添加多架构支持
+        # 添加标准架构支持
         sudo dpkg --add-architecture arm64
         sudo dpkg --add-architecture armhf
-        sudo apt-get update -y --fix-missing
+        sudo apt-get update -y
         
-        # 安装基础依赖
-        sudo apt-get install -y software-properties-common
+        # 修复损坏的依赖链
+        sudo apt-get -f install -y
+        sudo apt --fix-broken install -y
+
+        # 安装基础工具
+        sudo apt-get install -y \
+          software-properties-common \
+          apt-transport-https \
+          ca-certificates
+
+        # 添加Python PPA源
         sudo add-apt-repository -y ppa:deadsnakes/ppa
-        sudo apt-get update
+        sudo apt-get update -y
         
-        # 安装Python 2.7
+        # 安装指定Python版本
         sudo apt-get install -y \
           python${PYTHON_VERSION} \
           python${PYTHON_VERSION}-dev \
           python-is-python3
 
-        # 安装多架构编译依赖（关键修复）
+        # 安装多架构编译依赖
         sudo apt-get install -y \
           crossbuild-essential-arm64 \
           crossbuild-essential-armhf \
-          libssl-dev:arm64=3.0.2-0ubuntu1.10 \
-          libssl-dev:armhf=3.0.2-0ubuntu1.10 \
+          libssl-dev:arm64 \
+          libssl-dev:armhf \
           libc6-dev-arm64-cross \
           libc6-dev-armhf-cross \
           binutils-aarch64-linux-gnu \
           binutils-arm-linux-gnueabihf
 
-        # 其他构建工具
+        # 安装核心构建工具
         sudo apt-get install -y \
-          git ccache automake flex lzop bison gperf \
-          zip curl zlib1g-dev g++-multilib libxml2-utils \
-          squashfs-tools schedtool liblz4-tool make \
-          maven lib32ncurses5-dev libx11-dev \
-          xsltproc unzip device-tree-compiler
+          git ccache automake flex bison \
+          lzop liblz4-tool zlib1g-dev \
+          gcc-multilib g++-multilib \
+          libxml2-utils xsltproc unzip \
+          device-tree-compiler make
 
-        # 修复符号链接
+        # 创建Python符号链接
         sudo ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python2
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
@@ -71,14 +80,14 @@ jobs:
       timeout-minutes: 10
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        # 使用国内镜像加速
-        wget https://mirror.nju.edu.cn/android/prebuilts/clang/host/linux-x86/clang-${{ env.CLANG_VERSION }}.tar.gz -O clang.tar.gz
+        # 使用清华镜像加速下载
+        wget https://mirrors.tuna.tsinghua.edu.cn/android/prebuilts/clang/host/linux-x86/clang-${{ env.CLANG_VERSION }}.tar.gz -O clang.tar.gz
         mkdir clang-aosp && tar -xzf clang.tar.gz -C clang-aosp --strip-components 1
         
-        wget https://mirror.nju.edu.cn/android/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/android-12.1.0_r27.tar.gz -O gcc-aosp.tar.gz
+        wget https://mirrors.tuna.tsinghua.edu.cn/android/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/android-12.1.0_r27.tar.gz -O gcc-aosp.tar.gz
         mkdir gcc-aosp && tar -xzf gcc-aosp.tar.gz -C gcc-aosp --strip-components 1
         
-        wget https://mirror.nju.edu.cn/android/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/android-12.1.0_r27.tar.gz -O gcc32-aosp.tar.gz
+        wget https://mirrors.tuna.tsinghua.edu.cn/android/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/android-12.1.0_r27.tar.gz -O gcc32-aosp.tar.gz
         mkdir gcc32-aosp && tar -xzf gcc32-aosp.tar.gz -C gcc32-aosp --strip-components 1
 
     - name: Build Kernel
@@ -94,22 +103,24 @@ jobs:
         fi
         
         export PATH="$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin:$PATH"
-        # 两阶段编译
+        
+        # 配置阶段
         make -j$(nproc) -C android-kernel O=out \
           ARCH=${{ env.TARGET_ARCH }} \
-          CC=clang \
-          CROSS_COMPILE=aarch64-linux-android- \
-          CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-          CLANG_TRIPLE=aarch64-linux-gnu- \
+          CC="clang" \
+          CLANG_TRIPLE="aarch64-linux-gnu-" \
+          CROSS_COMPILE="aarch64-linux-android-" \
+          CROSS_COMPILE_ARM32="arm-linux-androideabi-" \
           ${{ env.BUILD_EXTRA_COMMAND }} \
           ${{ env.KERNEL_DEFCONFIG }}
 
+        # 编译阶段
         make -j$(nproc) -C android-kernel O=out \
           ARCH=${{ env.TARGET_ARCH }} \
-          CC=clang \
-          CROSS_COMPILE=aarch64-linux-android- \
-          CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-          CLANG_TRIPLE=aarch64-linux-gnu- \
+          CC="clang" \
+          CLANG_TRIPLE="aarch64-linux-gnu-" \
+          CROSS_COMPILE="aarch64-linux-android-" \
+          CROSS_COMPILE_ARM32="arm-linux-androideabi-" \
           ${{ env.BUILD_EXTRA_COMMAND }}
 
     - name: Package artifacts

@@ -14,50 +14,57 @@ jobs:
 
     - name: Setup Configuration
       run: |
-        while IFS= read -r line; do
-          if [[ $line == KERNEL_* || $line == USE_* ]]; then
-            key="${line%%=*}"
-            value="${line#*=}"
-            echo "$key=$value" >> $GITHUB_ENV
-          fi
-        done < config.env
+        # 修复环境变量加载
+        grep -E '^(KERNEL_|USE_|DEVICE)' config.env | while read -r line; do
+          echo "$line" >> $GITHUB_ENV
+        done
 
     - name: Setup build environment
       run: |
-        # 强制更换APT源为国内镜像
-        sudo sed -i 's#http://.*ubuntu.com#https://mirrors.ustc.edu.cn#g' /etc/apt/sources.list
-        sudo sed -i 's#http://security.ubuntu.com#https://mirrors.ustc.edu.cn#g' /etc/apt/sources.list
-        
-        # 修复架构支持
+        # 彻底重建APT源配置
+        sudo rm -rf /etc/apt/sources.list.d/*
+        sudo tee /etc/apt/sources.list << EOL
+        deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy main restricted universe multiverse
+        deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-updates main restricted universe multiverse
+        deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-backports main restricted universe multiverse
+        deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-security main restricted universe multiverse
+        EOL
+
+        # 修复架构配置（解决armmFp/armfR4等错误）
         sudo dpkg --add-architecture arm64
         sudo dpkg --add-architecture armhf
         sudo apt-get update -y
-        sudo apt --fix-broken install -y
+        sudo apt-get -f install -y
 
-        # 安装基础依赖
+        # 安装Python环境（解决旧版依赖问题）
         sudo apt-get install -y \
           software-properties-common \
           python${PYTHON_VERSION} \
           python${PYTHON_VERSION}-dev \
-          crossbuild-essential-arm64 \
-          crossbuild-essential-armhf
+          python-is-python3
 
-        # 安装构建工具链
+        # 安装修复后的构建依赖
         sudo apt-get install -y \
-          git ccache automake flex bison lzop \
-          gcc-multilib g++-multilib zlib1g-dev \
-          libssl-dev:arm64 libssl-dev:armhf
+          crossbuild-essential-arm64 \
+          crossbuild-essential-armhf \
+          libssl-dev:arm64=3.0.2-0ubuntu1.10 \
+          libssl-dev:armhf=3.0.2-0ubuntu1.10 \
+          binutils-aarch64-linux-gnu \
+          binutils-arm-linux-gnueabihf \
+          git ccache automake flex bison lzop
+
+        # 创建符号链接
+        sudo ln -sf /usr/bin/python2.7 /usr/local/bin/python2
+        mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
     - name: Download toolchains
-      timeout-minutes: 5
+      timeout-minutes: 3  # 缩短超时应对VPN不稳定
       run: |
-        mkdir -p $GITHUB_WORKSPACE/kernel_workspace
         cd $GITHUB_WORKSPACE/kernel_workspace
-        
-        # 使用清华镜像加速下载
-        wget https://mirrors.tuna.tsinghua.edu.cn/android/prebuilts/clang/host/linux-x86/clang-${{ env.CLANG_VERSION }}.tar.gz \
-          -O clang.tar.gz
-        mkdir clang-aosp && tar -xzf clang.tar.gz -C clang-aosp --strip-components 1
+        # 使用南京大学镜像加速
+        wget https://mirror.nju.edu.cn/android/prebuilts/clang/host/linux-x86/clang-${{ env.CLANG_VERSION }}.tar.gz \
+          --tries=3 --retry-connrefused -O clang.tar.gz
+        mkdir clang-aosp && tar --warning=no-unknown-keyword -xzf clang.tar.gz -C clang-aosp --strip-components 1
 
     - name: Build Kernel
       env:
@@ -65,29 +72,32 @@ jobs:
         KBUILD_BUILD_HOST: GitHub-Actions
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        git clone --depth=1 --branch=${{ env.KERNEL_SOURCE_BRANCH }} ${{ env.KERNEL_SOURCE }} android-kernel
+        # 带重试机制的克隆
+        for i in {1..3}; do git clone --depth=1 --branch=${{ env.KERNEL_SOURCE_BRANCH }} ${{ env.KERNEL_SOURCE }} android-kernel && break || sleep 10; done
         
         # 应用KernelSU补丁
-        if [ "${{ env.USE_KERNELSU }}" = "true" ]; then
-          curl -sSL "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s -- android-kernel
-        fi
+        [ "${{ env.USE_KERNELSU }}" = "true" ] && {
+          curl -sSL --retry 3 "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s -- android-kernel
+        }
         
-        # 配置编译环境
+        # 修复架构参数（解决armmFp等错误）
         export PATH="$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin:$PATH"
-        
         make -j$(nproc) -C android-kernel O=out \
           ARCH=arm64 \
-          CC=clang \
-          CROSS_COMPILE=aarch64-linux-android- \
+          CC="clang" \
+          CROSS_COMPILE="aarch64-linux-android-" \
+          LLVM=1 \
           ${{ env.KERNEL_DEFCONFIG }}
 
         make -j$(nproc) -C android-kernel O=out \
           ARCH=arm64 \
-          CC=clang \
-          CROSS_COMPILE=aarch64-linux-android-
+          CC="clang" \
+          CROSS_COMPILE="aarch64-linux-android-" \
+          LLVM=1
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
+      if: ${{ always() }}
       with:
-        name: kernel-${{ env.DEVICE }}
+        name: kernel-${{ env.DEVICE }}-build
         path: $GITHUB_WORKSPACE/kernel_workspace/android-kernel/out/arch/arm64/boot/
